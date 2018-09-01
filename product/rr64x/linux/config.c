@@ -23,7 +23,7 @@ int init_config(void)
 
 char driver_name[] = "rr64x";
 char driver_name_long[] = "RocketRAID 64x SATA controller driver";
-char driver_ver[] = "v1.1 (" __DATE__ " " __TIME__ ")";
+char driver_ver[] = "v1.1x";
 int  osm_max_targets = 32;
 
 int os_max_cache_size = 0x800000;

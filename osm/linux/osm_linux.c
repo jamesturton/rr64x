@@ -16,6 +16,54 @@ module_param(autorebuild, int, 0);
 MODULE_PARM(autorebuild, "i");
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+/* As the timer is defined on stack, we need to also have the data on stack.
+ * See process_timeout() in kernel timer.c */
+struct timer_list_sem {
+	struct timer_list t;
+	struct semaphore *sem;
+};
+
+static void timeout_sem(struct timer_list *tl)
+{
+	struct timer_list_sem *tls = from_timer(tls, tl, t);
+	up(tls->sem);
+}
+
+/* Wait for a semaphore with timeout */
+static void do_sem_wait(struct semaphore *sem, unsigned long timeout)
+{
+	struct timer_list_sem tls;
+
+	tls.sem = sem;
+	timer_setup_on_stack(&tls.t, timeout_sem, 0);
+	mod_timer(&tls.t, jiffies + timeout);
+	if (down_interruptible(sem))
+		down(sem);
+	del_timer(&tls.t);
+	destroy_timer_on_stack(&tls.t);
+}
+#else
+static void timeout_sem(unsigned long data)
+{
+	up((struct semaphore *)(HPT_UPTR)data);
+}
+
+/* Wait for a semaphore with timeout */
+static void do_sem_wait(struct semaphore *sem, unsigned long timeout)
+{
+	struct timer_list timer;
+	init_timer(&timer);
+	timer.data = (HPT_UPTR)sem;
+	timer.function = timeout_sem;
+	timer.expires = jiffies + timeout;
+	add_timer(&timer);
+	if (down_interruptible(sem))
+		down(sem);
+	del_timer(&timer);
+}
+#endif
+
 /* notifier block to get notified on system shutdown/halt/reboot */
 static int hpt_halt(struct notifier_block *nb, ulong event, void *buf);
 static struct notifier_block hpt_notifier = {
@@ -319,7 +367,11 @@ static int hpt_detect (Scsi_Host_Template *tpnt)
 
 		spin_lock_init(&initlock);
 		vbus_ext->lock = &initlock;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+		timer_setup(&vbus_ext->timer, 0, 0);
+#else
 		init_timer(&vbus_ext->timer);
+#endif
 
 		for (hba = vbus_ext->hba_list; hba; hba = hba->next) {
 			if (!hba->ldm_adapter.him->initialize(hba->ldm_adapter.him_handle)) {
@@ -1470,19 +1522,13 @@ static void hpt_flush_done(PCOMMAND pCmd)
 	up(sem);
 }
 
-static void cmd_timeout_sem(unsigned long data)
-{
-	up((struct semaphore *)(HPT_UPTR)data);
-}
-
 /*
  * flush a vdev (without retry).
  */
 static int hpt_flush_vdev(PVBUS_EXT vbus_ext, PVDEV vd)
 {
 	PCOMMAND pCmd;
-	unsigned long flags, timeout;
-	struct timer_list timer;
+	unsigned long flags;
 	struct semaphore sem;
 	int result = 0;
 	HPT_UINT count;
@@ -1517,15 +1563,7 @@ wait:
 	spin_unlock_irqrestore(vbus_ext->lock, flags);
 
 	if (down_trylock(&sem)) {
-		timeout = jiffies + 20 * HZ;
-		init_timer(&timer);
-		timer.expires = timeout;
-		timer.data = (HPT_UPTR)&sem;
-		timer.function = cmd_timeout_sem;
-		add_timer(&timer);
-		if (down_interruptible(&sem))
-			down(&sem);
-		del_timer(&timer);
+		do_sem_wait(&sem, 20 * HZ);
 	}
 
 	spin_lock_irqsave(vbus_ext->lock, flags);
@@ -1645,15 +1683,9 @@ static void hpt_ioctl_done(struct _IOCTL_ARG *arg)
 	arg->ioctl_cmnd = 0;
 }
 
-static void hpt_ioctl_timeout(unsigned long data)
-{
-	up((struct semaphore *)data);
-}
-
 void __hpt_do_ioctl(PVBUS_EXT vbus_ext, IOCTL_ARG *ioctl_args)
 {
-	unsigned long flags, timeout;
-	struct timer_list timer;
+	unsigned long flags;
 	struct semaphore sem;
 
 	if (vbus_ext->needs_refresh
@@ -1677,15 +1709,7 @@ wait:
 	spin_unlock_irqrestore(vbus_ext->lock, flags);
 
 	if (down_trylock(&sem)) {
-		timeout = jiffies + 20 * HZ;
-		init_timer(&timer);
-		timer.expires = timeout;
-		timer.data = (HPT_UPTR)&sem;
-		timer.function = hpt_ioctl_timeout;
-		add_timer(&timer);
-		if (down_interruptible(&sem))
-			down(&sem);
-		del_timer(&timer);
+		do_sem_wait(&sem, 20 * HZ);
 	}
 
 	spin_lock_irqsave(vbus_ext->lock, flags);
@@ -2194,6 +2218,10 @@ module_exit(exit_this_scsi_driver);
 
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,10)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+/* FIXME: Not sure I am allowed to make this change. Keeping it for testing purposes.
+ * Without this change we have a problem with missing symbols, for instance, sev_enable_key */
+MODULE_LICENSE("GPL");
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,10)
 MODULE_LICENSE("Proprietary");
 #endif

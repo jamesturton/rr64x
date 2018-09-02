@@ -619,9 +619,17 @@ HPT_U8 os_get_vbus_seq(void *osext)
 	return ((PVBUS_EXT)osext)->host->host_no;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+static void os_timer_for_ldm(struct timer_list *t)
+#else
 static void os_timer_for_ldm(unsigned long data)
+#endif
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+	PVBUS_EXT vbus_ext = from_timer(vbus_ext, t, timer);
+#else
 	PVBUS_EXT vbus_ext = (PVBUS_EXT)data;
+#endif
 	unsigned long flags;
 
 	spin_lock_irqsave(vbus_ext->lock, flags);
@@ -637,7 +645,9 @@ void  os_request_timer(void * osext, HPT_U32 interval)
 	
 	del_timer(&vbus_ext->timer);
 	vbus_ext->timer.function = os_timer_for_ldm;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
 	vbus_ext->timer.data = (unsigned long)vbus_ext;
+#endif
 	vbus_ext->timer.expires = jiffies + 1 + interval / (1000000/HZ);
 	add_timer(&vbus_ext->timer);
 }

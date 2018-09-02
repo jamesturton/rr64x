@@ -1,24 +1,25 @@
----
 Yuri Chernyavsky <yurac777.gmail.com> 01/04/2018:
 
 Patched the source code of HPT rr64x driver to compile on newer kernels.
 Used the info from:
+
 https://blog.hqcodeshop.fi/archives/266-HighPoint-RocketRAID-620-Linux-driver.html,
+
 https://help.ubuntu.com/community/RocketRaid,
+
 https://ubuntuforums.org/showthread.php?t=1899544&page=10.
 
 Tested with Ubuntu 17.10.
 
 To install:
-   
+```   
    sudo cp -R rr64x/ /usr/src/rr64x-1.1x
-   sudo dkms add -m rr64x -v 1.1x
    sudo dkms add -m rr64x -v 1.1x
    sudo dkms build -m rr64x -v 1.1x
    sudo dkms install -m rr64x -v 1.1x
    sudo modprobe rr64x
    # Add rr64x to /etc/modules to load automatically on boot
----
+```
 
 RocketRAID 64x SATA Controller Linux Open Source Driver
 Copyright (C) 2008-2010 HighPoint Technologies, Inc. All rights reserved.

@@ -313,6 +313,7 @@ static void ldm_initialize_vbus_done(void *osext)
 	up(&((PVBUS_EXT)osext)->sem);
 }
 
+struct Scsi_Host *scsi_register_legacy(/*Scsi_Host_Template*/void *scsi_host_template, int privsize);
 
 static int hpt_detect (Scsi_Host_Template *tpnt)
 {
@@ -408,7 +409,7 @@ static int hpt_detect (Scsi_Host_Template *tpnt)
 	/* register scsi hosts */
 	ldm_for_each_vbus(vbus, vbus_ext) {
 
-		host = scsi_register(tpnt, sizeof(void *));
+		host = scsi_register_legacy(tpnt, sizeof(void *));
 		if (!host) {
 			os_printk("scsi_register failed");
 			continue;
@@ -1664,6 +1665,8 @@ static int hpt_halt(struct notifier_block *nb, ulong event, void *buf)
 	return NOTIFY_OK;
 }
 
+void scsi_unregister_legacy(/*struct Scsi_Host*/void *scsi_host);
+
 static int hpt_release (struct Scsi_Host *host)
 {
 	PVBUS_EXT vbus_ext = get_vbus_ext(host);
@@ -1673,7 +1676,7 @@ static int hpt_release (struct Scsi_Host *host)
 	if (!ldm_get_next_vbus(0, 0))
 		unregister_reboot_notifier(&hpt_notifier);
 
-	scsi_unregister(host);
+	scsi_unregister_legacy(host);
 	return 0;
 }
 
@@ -1738,7 +1741,6 @@ void hpt_do_ioctl(IOCTL_ARG *ioctl_args)
 	}
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 static int hpt_proc_set_info(struct Scsi_Host *host, char *buffer, int length)
 {
 	IOCTL_ARG ioctl_args;
@@ -1832,6 +1834,7 @@ invalid:
 	return -EINVAL;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 static int hpt_proc_info26(struct Scsi_Host *host, char *buffer, char **start,
 					off_t offset, int length, int inout)
 {
@@ -2037,7 +2040,7 @@ invalid:
 	return -EINVAL;
 }
 
-static HPT_U32 hpt_scsi_ioctl_get_diskid(Scsi_Device * dev, int cmd, void *arg)
+static HPT_U32 hpt_scsi_ioctl_get_diskid(Scsi_Device * dev, unsigned int cmd, void *arg)
 {
 	if (cmd==0x3ff) {
 		int data[4];
@@ -2090,9 +2093,9 @@ static HPT_U32 hpt_scsi_ioctl_get_diskid(Scsi_Device * dev, int cmd, void *arg)
 }
 
 
-int (*hpt_scsi_ioctl_handler)(Scsi_Device * dev, int cmd, void *arg) = 0;
+int (*hpt_scsi_ioctl_handler)(Scsi_Device * dev, unsigned int cmd, void *arg) = 0;
 
-static int hpt_scsi_ioctl(Scsi_Device * dev, int cmd, void *arg)
+static int hpt_scsi_ioctl(Scsi_Device * dev, unsigned int cmd, void *arg)
 {
 	/* support for HDIO_xxx ioctls */
 	if ((cmd & 0xfffff300)==0x300) {
@@ -2112,13 +2115,118 @@ static int hpt_scsi_ioctl(Scsi_Device * dev, int cmd, void *arg)
 	return -EINVAL;
 }
 
+/*MiSt: in order to not to have to modify too much code, this re-adds a
+        ‘legacy_hosts’ list to a local extension of the ‘scsi_host_template’: */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+#define RR_STATIC_ASSERT(n, c)                     \
+		enum { RR_static_##n = 1 / (int)(!!(c)) }; \
+
 /*
  * Host template
+ * osm/linux/osm_linux.h
+ * 70:typedef struct scsi_host_template Scsi_Host_Template;
  */
+struct scsi_host_template_legacy {
+        struct scsi_host_template rr_driver;
+
+        /*
+         * List of hosts per template.
+         *
+         * This is only for use by scsi_module.c for legacy templates.
+         * For these access to it is synchronized implicitly by
+         * module_init/module_exit.
+         */
+        struct list_head legacy_hosts;
+};
+
+/* "struct module *module; must be the first member of struct scsi_host_template_legacy" */
+RR_STATIC_ASSERT(check1, offsetof(struct scsi_host_template_legacy, rr_driver.module) == 0);
+
+/* "randomly chosen field int this_id; must be at the same offset as in struct scsi_host_template" */
+RR_STATIC_ASSERT(check2, offsetof(struct scsi_host_template_legacy, rr_driver.this_id) == offsetof(struct scsi_host_template, this_id));
+
+/* "struct module *module; must be the first member of struct scsi_host_template_legacy" */
+RR_STATIC_ASSERT(check3, offsetof(struct scsi_host_template_legacy, legacy_hosts) == sizeof(struct scsi_host_template));
+
+#define Scsi_Host_Template struct scsi_host_template_legacy
+
+
+/*MiSt: in this extension to ‘struct Scsi_Host’, we just store ‘sht_legacy_list’
+        as private data in the structures ‘hostdata’ member: */
+struct Scsi_Host_Legacy {
+        struct Scsi_Host scsi_host;
+
+        /* host = scsi_register(tpnt, sizeof(void *));
+         *
+         * See osm/linux/osm_linux.h:
+         * #define get_vbus_ext(host) (*(PVBUS_EXT *)host->hostdata)
+         */
+        PVBUS_EXT vbus_ext;
+
+        /*
+         * List of hosts per template.
+         *
+         * This is only for use by scsi_module.c for legacy templates.
+         * For these access to it is synchronized implicitly by
+         * module_init/module_exit.
+         */
+        struct list_head sht_legacy_list;
+};
+
+/* "struct list_head __devices; must be the first member of struct Scsi_Host_Legacy" */
+RR_STATIC_ASSERT(check4, offsetof(struct Scsi_Host_Legacy, scsi_host.__devices) == 0);
+
+/* "void *vbus_ext; must be the first private data member of Scsi_Host.hostdata" */
+RR_STATIC_ASSERT(check5, offsetof(struct Scsi_Host_Legacy, vbus_ext) == offsetof(struct Scsi_Host, hostdata));
+
+/* "struct list_head sht_legacy_list; must be the second private data member of Scsi_Host.hostdata" */
+RR_STATIC_ASSERT(check6, offsetof(struct Scsi_Host_Legacy, sht_legacy_list) == (offsetof(struct Scsi_Host, hostdata) + sizeof(VBUS_EXT *)));
+
+
+#define get_legacy_vbus_ext(host) (*(PVBUS_EXT *)host->scsi_host.hostdata)
+#else
+#define get_legacy_vbus_ext(host) get_vbus_ext(host)
+#endif
+
 static Scsi_Host_Template driver_template = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+    .rr_driver = {
+#endif
 	name:                    driver_name,
+	/*MiSt: Linux kernel v4.17 removes the older driver initialization model.
+        This is explained in ‘scsi_mid_low_api.txt’:
+
+	„The newer model allows HBAs to be hot plugged (and unplugged)
+	during the lifetime of the LLD and will be referred to as the
+	"hotplug" initialization model. The newer model is preferred as it
+	can handle both traditional SCSI equipment that is permanently
+	connected as well as modern "SCSI" devices (e.g. USB or IEEE 1394
+	connected digital cameras) that are hotplugged.“
+
+	As suggested, we now call hpt_detect() at the end of ‘int init_this_scsi_driver(void);’
+	*/
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
 	detect:                  hpt_detect,
 	release:                 hpt_release,
+#else
+	/* See ‘include/scsi/scsi_host.h’: */
+#if 0
+	/*
+	 * Used to initialize old-style drivers.  For new-style drivers
+	 * just perform all work in your module initialization function.
+	 *
+	 * Status:  OBSOLETE
+	 */
+	int (* detect)(struct scsi_host_template *);
+
+	/*
+	 * Used as unload callback for hosts with old-style drivers.
+	 *
+	 * Status: OBSOLETE
+	 */
+	int (* release)(struct Scsi_Host *);
+#endif
+#endif
 	queuecommand:            hpt_queuecommand,
 	eh_device_reset_handler: hpt_reset,
 	eh_bus_reset_handler:    hpt_reset,
@@ -2129,7 +2237,13 @@ static Scsi_Host_Template driver_template = {
 	unchecked_isa_dma:       0,
 	emulated:                0,
 	/* ENABLE_CLUSTERING will cause problem when we handle PIO for highmem_io */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
 	use_clustering:          DISABLE_CLUSTERING,
+#endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3,10,0)  /*MiSt: commit 0ffddfbb834557b8babc7f050b83d11dbcbb1008 */
+	show_info:               hpt_proc_show_info,  /*see osm/linux/osm_linux.h,hptinfo.c*/
+	write_info:              hpt_proc_set_info,   /*see current file, line 1718*/
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0) /* 2.4.x */
 	use_new_eh_code:         1,
 	proc_name:               driver_name,
@@ -2148,7 +2262,50 @@ static Scsi_Host_Template driver_template = {
 	max_sectors:             128,
 #endif
 	this_id:                 -1
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+    },
+
+    .legacy_hosts = NULL
+#endif
 };
+
+struct Scsi_Host *scsi_register_legacy(/*Scsi_Host_Template*/void *scsi_host_template, int privsize)
+{
+	Scsi_Host_Template *sht = (Scsi_Host_Template *)scsi_host_template;
+
+	/*MiSt: Linux kernel v4.17 removes the older driver initialization model */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
+	struct Scsi_Host *shost = scsi_host_alloc(
+			(struct scsi_host_template *)sht, privsize);
+
+	if (!sht->detect) {
+		printk(KERN_WARNING "scsi_register() called on new-style "
+				    "template for driver %s\n", sht->name);
+		dump_stack();
+	}
+#else
+	struct Scsi_Host_Legacy *shost = (struct Scsi_Host_Legacy *)scsi_host_alloc(
+			(struct scsi_host_template *)sht, privsize + sizeof(struct list_head)); /* + FIELD_SIZEOF(struct Scsi_Host_Legacy, sht_legacy_list) */
+#endif
+
+	if (shost)
+		list_add_tail(&shost->sht_legacy_list, &sht->legacy_hosts);
+	return (struct Scsi_Host *)shost;
+}
+
+void scsi_unregister_legacy(/*struct Scsi_Host*/void *scsi_host)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
+	struct Scsi_Host *shost = (struct Scsi_Host *)scsi_host;
+#else
+	struct Scsi_Host_Legacy *shost = (struct Scsi_Host_Legacy *)scsi_host;
+#endif
+
+	list_del(&shost->sht_legacy_list);
+	scsi_host_put((struct Scsi_Host *)shost);
+}
+
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
 
@@ -2160,11 +2317,18 @@ EXPORT_NO_SYMBOLS;
 /* scsi_module.c is deprecated in kernel 2.6 */
 static int __init init_this_scsi_driver(void)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
 	struct scsi_host_template *sht = &driver_template;
 	struct Scsi_Host *shost;
+#else
+	Scsi_Host_Template *sht = (Scsi_Host_Template *)&driver_template;
+	struct Scsi_Host_Legacy *shost;
+#endif
 	struct list_head *l;
 	int error;
 
+	/*MiSt -- kernel v4.17+: the ‘release’ function pointer has been removed */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
 	if (!sht->release) {
 		printk(KERN_ERR
 			"scsi HBA driver %s didn't set a release method.\n",
@@ -2173,44 +2337,60 @@ static int __init init_this_scsi_driver(void)
 	}
 
 	sht->module = THIS_MODULE;
+#else
+	sht->rr_driver.module = THIS_MODULE;
+#endif
 	INIT_LIST_HEAD(&sht->legacy_hosts);
 
-	sht->detect(sht);
+	hpt_detect((struct scsi_host_template *)sht);  /*LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0): sht->detect(sht);*/
 	if (list_empty(&sht->legacy_hosts))
 		return -ENODEV;
 
 	list_for_each_entry(shost, &sht->legacy_hosts, sht_legacy_list) {
-		error = scsi_add_host(shost, &get_vbus_ext(shost)->hba_list->pcidev->dev);
+		error = scsi_add_host((struct Scsi_Host *)shost, &get_legacy_vbus_ext(shost)->hba_list->pcidev->dev);
 		if (error)
 			goto fail;
-		scsi_scan_host(shost);
+		scsi_scan_host((struct Scsi_Host *)shost);
 	}
 	return 0;
  fail:
 	l = &shost->sht_legacy_list;
 	while ((l = l->prev) != &sht->legacy_hosts)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
 		scsi_remove_host(list_entry(l, struct Scsi_Host, sht_legacy_list));
+#else
+		scsi_remove_host((struct Scsi_Host *)list_entry(l, struct Scsi_Host_Legacy, sht_legacy_list));
+#endif
 	return error;
 }
 
 static void __exit exit_this_scsi_driver(void)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
 	struct scsi_host_template *sht = &driver_template;
 	struct Scsi_Host *shost, *s;
+#else
+	Scsi_Host_Template *sht = (Scsi_Host_Template *)&driver_template;
+	struct Scsi_Host_Legacy *shost, *s;
+#endif
 
 	list_for_each_entry(shost, &sht->legacy_hosts, sht_legacy_list)
-		scsi_remove_host(shost);
+		scsi_remove_host((struct Scsi_Host *)shost);
 	list_for_each_entry_safe(shost, s, &sht->legacy_hosts, sht_legacy_list)
-		sht->release(shost);
+		hpt_release((struct Scsi_Host *)shost); /*LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0): sht->release(shost);*/
 
 	if (list_empty(&sht->legacy_hosts))
 		return;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
 	printk(KERN_WARNING "%s did not call scsi_unregister\n", sht->name);
-	dump_stack();
+#else
+	printk(KERN_WARNING "%s did not call scsi_unregister\n", sht->rr_driver.name);
+#endif
+ 	dump_stack();
 
 	list_for_each_entry_safe(shost, s, &sht->legacy_hosts, sht_legacy_list)
-		scsi_unregister(shost);
+		scsi_unregister_legacy(shost);
 }
 
 module_init(init_this_scsi_driver);

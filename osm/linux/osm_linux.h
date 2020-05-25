@@ -190,7 +190,11 @@ typedef void irqreturn_t;
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+#define hpt_verify_area(type, addr, size) (!access_ok((addr), (size)))
+#else
 #define hpt_verify_area(type, addr, size) (!access_ok((type), (addr), (size)))
+#endif
 #else 
 #define hpt_verify_area(type, addr, size) (verify_area((type), (addr), (size)))
 #endif
@@ -207,7 +211,9 @@ typedef void irqreturn_t;
 #define HPT_SG_PAGE(sg)		(sg)->page
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,21)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+#define HPT_FIND_SLOT_DEVICE(bus,devfn) pci_get_domain_bus_and_slot(0,bus,devfn)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,21)
 #define HPT_FIND_SLOT_DEVICE pci_get_bus_and_slot
 #else 
 #define HPT_FIND_SLOT_DEVICE pci_find_slot
@@ -299,6 +305,10 @@ VBUS_EXT, *PVBUS_EXT;
 void refresh_sd_flags(PVBUS_EXT vbus_ext);
 void hpt_do_ioctl(IOCTL_ARG *ioctl_args);
 void hpt_stop_tasks(PVBUS_EXT vbus_ext);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 int hpt_proc_get_info(struct Scsi_Host *host, char *buffer, char **start, off_t offset, int length);
+#else
+int hpt_proc_show_info(struct seq_file *m, struct Scsi_Host *host);
+#endif
 
 #endif

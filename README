@@ -7,9 +7,11 @@ https://blog.hqcodeshop.fi/archives/266-HighPoint-RocketRAID-620-Linux-driver.ht
 
 https://help.ubuntu.com/community/RocketRaid,
 
-https://ubuntuforums.org/showthread.php?t=1899544&page=10.
+https://ubuntuforums.org/showthread.php?t=1899544&page=10,
 
-Tested with Ubuntu 18.04.
+https://github.com/dsiggi/RocketRAID.
+
+Tested with Ubuntu 20.04.
 
 To install:
 ```   

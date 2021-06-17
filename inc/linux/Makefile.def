@@ -105,6 +105,7 @@ ifneq ($(KERNEL_VER), 2.4)
 TARGET := $(TARGETNAME).ko
 
 $(TARGETNAME).ko: $(CURDIR)/.build/Makefile
+	touch $(foreach TARGETMOD,$(TARGETMODS),$(CURDIR)/.build/.$(TARGETMOD).cmd)
 	@$(MAKE) -C $(KERNELDIR) M=$(CURDIR)/.build modules
 	@cp -f $(CURDIR)/.build/$(TARGETNAME).ko $(CURDIR)/
 
